@@ -23,8 +23,7 @@ var events = require('events'),
   dns = require('dns'),
   net = require('net'),
   http = require('http'),
-  crypto = require('crypto'),
-  mime = require('node-mime/mime');
+  crypto = require('crypto');
 
 /* Bucky is an S3 Bucket */
 var Bucky = function(account, host, bucket, options) {
@@ -72,7 +71,7 @@ Bucky.prototype.authorize = function(method, target, headers, amz_headers) {
   headers.Authorization = 'AWS ' + bucky.account.access_key + ":" + hmac.digest(encoding = 'base64');
 };
 
-Bucky.prototype.upload_file = function(file, target){
+Bucky.prototype.upload_file = function(file, target, mime_type, custom){
   var bucky = this;
   target = target || path.basename(file);
   fs.stat(file, function(err, stats){
@@ -81,7 +80,7 @@ Bucky.prototype.upload_file = function(file, target){
     } else {
       var send = function(md5) {
         var read_stream = fs.createReadStream(file);
-        bucky.upload(read_stream, target, stats.size, md5)
+        bucky.upload(read_stream, target, stats.size, md5, mime_type, custom)
       };
       if(bucky.check_md5 === true){
         var hash = crypto.createHash('md5');
@@ -102,7 +101,7 @@ Bucky.prototype.upload_file = function(file, target){
   });
 };
 
-Bucky.prototype.upload = function(read_stream, target, content_length, md5){
+Bucky.prototype.upload = function(read_stream, target, content_length, md5, mime_type, custom){
   read_stream.pause();
   var bucky = this;
   dns.resolve4(bucky.host, function(err, addresses) {
@@ -116,18 +115,19 @@ Bucky.prototype.upload = function(read_stream, target, content_length, md5){
       read_stream.on('error', function(err) {
         bucky.emit('error', err);
       });
-      bucky.put(read_stream, net_stream, target, content_length, md5);
+      bucky.put(read_stream, net_stream, target, content_length, md5, mime_type, custom);
     }
   });
 };
 
-Bucky.prototype.put = function(read_stream, net_stream, target, content_length, md5) {
+Bucky.prototype.put = function(read_stream, net_stream, target, content_length, md5, mime_type, custom) {
+  mime_type = mime_type ? mime_type : 'text/plain';
+  custom = custom ? custom : {}
   var bucky = this, streaming = false, ok = false,
-    mime_type = mime.lookup(target),
     headers = {
     'Date': new Date().toUTCString(),
     'Host': bucky.host,
-    'Content-Type': mime.lookup(target),
+    'Content-Type': mime_type,
     'Expect': '100-continue',
   };
   if (content_length) {
@@ -140,6 +140,10 @@ Bucky.prototype.put = function(read_stream, net_stream, target, content_length, 
     'x-amz-storage-class': bucky.storage_type,
     'x-amz-acl': bucky.acl
   };
+  var k = Object.keys(custom);
+  for (var i = 0; i < k.length; i++) {
+    amz_headers['x-amz-meta-' + k[i]] = '' + custom[k[i]];
+  }
   bucky.authorize('PUT', target, headers, amz_headers);
   net_stream.on('data', function (data) { 
     if (!streaming) {
@@ -228,6 +232,25 @@ Bucky.prototype.get = function(write_stream, file, range){
     }
   });
 };
+
+Bucky.prototype.head = function(file, callback) {
+  var bucky = this, expected = '200';
+    http_client = http.createClient(80, bucky.host);
+  var headers = {
+    'Date': new Date().toUTCString(),
+    'Host': bucky.host,
+  };
+  bucky.authorize('HEAD', file, headers);
+  var request = http_client.request('HEAD', '/' + file, headers);
+  request.end();
+  request.on('response', function (response) {
+    if (response.statusCode == expected) {
+	callback(null, response.headers);
+    } else {
+        callback(Error(response.statusCode + JSON.stringify(response.headers)), response.headers);
+    }
+  });
+}
 
 /* Sissy is an S3 Account */
 var Sissy = function(access_key, secret_key) {
